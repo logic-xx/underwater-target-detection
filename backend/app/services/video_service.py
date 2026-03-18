@@ -68,7 +68,7 @@ async def detect_video(
     task_id = generate_task_id()
 
     # 保存原始上传视频。
-    upload_path = settings.upload_dir_path / "videos" / f"{task_id}{suffix}"
+    upload_path = settings.upload_dir_abs / "videos" / f"{task_id}{suffix}"
     file_size = await save_upload_file(upload_file=upload_file, destination=upload_path)
     max_size_bytes = settings.max_video_size_mb * 1024 * 1024
     if file_size > max_size_bytes:
@@ -80,7 +80,7 @@ async def detect_video(
         )
 
     # 当前 mock 版本没有真实逐帧处理，所以直接复制一份作为结果视频。
-    result_path = settings.output_dir_path / "videos" / f"result_{task_id}{suffix}"
+    result_path = settings.output_dir_abs / "videos" / f"result_{task_id}{suffix}"
     copy_file(source=upload_path, destination=result_path)
 
     # 视频基础信息先写成固定 mock 值，后续可改为通过 OpenCV 读取真实信息。
@@ -100,7 +100,7 @@ async def detect_video(
 
     response = VideoDetectionResponse(
         task_id=task_id,
-        result_video_url=build_public_url(result_path, settings.output_dir_path, "/outputs"),
+        result_video_url=build_public_url(result_path, settings.output_dir_abs, "/outputs"),
         video_info=video_info,
         analysis=analysis,
         process_time=process_time,
@@ -108,7 +108,7 @@ async def detect_video(
 
     # 写 metadata，便于之后做历史任务、结果回查或调试。
     save_metadata(
-        destination=settings.metadata_dir_path / f"video_{task_id}.json",
+        destination=settings.metadata_dir_abs / f"video_{task_id}.json",
         payload={
             "task_type": "video",
             "task_id": task_id,

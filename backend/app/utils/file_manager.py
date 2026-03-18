@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+import cv2
 from fastapi import UploadFile
 
 
@@ -43,6 +44,17 @@ def copy_file(source: Path, destination: Path) -> None:
     """复制文件到目标路径。"""
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, destination)
+
+
+def save_image_array(image, destination: Path) -> None:
+    """把 OpenCV/Numpy 图像数组保存到目标路径。"""
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    suffix = destination.suffix or ".jpg"
+    success, encoded = cv2.imencode(suffix, image)
+    if not success:
+        raise ValueError("failed to encode image result")
+    encoded.tofile(str(destination))
 
 
 def save_metadata(destination: Path, payload: dict) -> None:

@@ -24,7 +24,6 @@ class Settings(BaseSettings):
     这里既保留了配置原始字符串，也提供了转换后的 `Path` 属性，
     方便业务代码直接使用。
     """
-
     # 服务监听地址与端口。
     backend_host: str = Field(default="127.0.0.1", alias="BACKEND_HOST")
     backend_port: int = Field(default=8000, alias="BACKEND_PORT")
@@ -45,12 +44,14 @@ class Settings(BaseSettings):
     max_image_size_mb: int = Field(default=20, alias="MAX_IMAGE_SIZE_MB")
     max_video_size_mb: int = Field(default=500, alias="MAX_VIDEO_SIZE_MB")
 
-    # 指定 `.env` 文件位置，并允许 `.env` 中包含当前类未显式声明的额外字段。
+    # 统一从项目根目录读取 `.env`，并显式放宽 protected namespace，
+    # 避免 `model_path` 这类字段触发 `model_` 前缀 warning。
     model_config = SettingsConfigDict(
         env_file=PROJECT_ROOT / ".env",
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
+        protected_namespaces=("settings_",),
     )
 
     def resolve_path(self, value: str) -> Path:
@@ -65,22 +66,22 @@ class Settings(BaseSettings):
         return PROJECT_ROOT / path
 
     @property
-    def model_path_path(self) -> Path:
+    def model_path_abs(self) -> Path:
         """模型文件的绝对路径。"""
         return self.resolve_path(self.model_path)
 
     @property
-    def upload_dir_path(self) -> Path:
+    def upload_dir_abs(self) -> Path:
         """上传目录的绝对路径。"""
         return self.resolve_path(self.upload_dir)
 
     @property
-    def output_dir_path(self) -> Path:
+    def output_dir_abs(self) -> Path:
         """输出目录的绝对路径。"""
         return self.resolve_path(self.output_dir)
 
     @property
-    def metadata_dir_path(self) -> Path:
+    def metadata_dir_abs(self) -> Path:
         """metadata 目录的绝对路径。"""
         return self.resolve_path(self.metadata_dir)
 
@@ -90,13 +91,13 @@ class Settings(BaseSettings):
         这里会同时创建总目录和图片/视频子目录，避免业务代码每次都判断目录是否存在。
         """
         for directory in (
-            self.upload_dir_path,
-            self.output_dir_path,
-            self.metadata_dir_path,
-            self.upload_dir_path / "images",
-            self.upload_dir_path / "videos",
-            self.output_dir_path / "images",
-            self.output_dir_path / "videos",
+            self.upload_dir_abs,
+            self.output_dir_abs,
+            self.metadata_dir_abs,
+            self.upload_dir_abs / "images",
+            self.upload_dir_abs / "videos",
+            self.output_dir_abs / "images",
+            self.output_dir_abs / "videos",
         ):
             directory.mkdir(parents=True, exist_ok=True)
 

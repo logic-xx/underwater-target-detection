@@ -1,1 +1,5 @@
-"""Model adapters will be added here in later iterations."""
+"""Model layer exports."""
+
+from app.models.detector import YOLODetector, get_detector
+
+__all__ = ["YOLODetector", "get_detector"]

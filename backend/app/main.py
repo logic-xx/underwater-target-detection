@@ -55,8 +55,8 @@ def create_app() -> FastAPI:
     # 挂载静态文件目录：
     # - `/outputs` 给前端访问检测结果图片/视频
     # - `/uploads` 主要用于调试或需要时查看原始上传文件
-    app.mount("/outputs", StaticFiles(directory=settings.output_dir_path), name="outputs")
-    app.mount("/uploads", StaticFiles(directory=settings.upload_dir_path), name="uploads")
+    app.mount("/outputs", StaticFiles(directory=settings.output_dir_abs), name="outputs")
+    app.mount("/uploads", StaticFiles(directory=settings.upload_dir_abs), name="uploads")
 
     @app.exception_handler(HTTPException)
     async def http_exception_handler(_: FastAPI, exc: HTTPException) -> JSONResponse:
