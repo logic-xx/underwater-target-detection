@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
+import numpy as np
 from ultralytics import YOLO
 from ultralytics.engine.results import Results
 
@@ -49,9 +50,18 @@ class YOLODetector:
 
     def detect_image(self, image_path: Path, conf: float, iou: float) -> ImageDetectionOutput:
         """执行图片检测并返回解析后的结果。"""
+        return self._predict(source=str(image_path), conf=conf, iou=iou)
+
+    def detect_frame(self, frame: np.ndarray, conf: float, iou: float) -> ImageDetectionOutput:
+        """对单帧图像数组执行检测并返回解析后的结果。"""
+
+        return self._predict(source=frame, conf=conf, iou=iou)
+
+    def _predict(self, source: str | np.ndarray, conf: float, iou: float) -> ImageDetectionOutput:
+        """执行一次 YOLO 推理，并统一封装为项目内部输出结构。"""
 
         results = self.model.predict(
-            source=str(image_path),
+            source=source,
             conf=conf,
             iou=iou,
             verbose=False,

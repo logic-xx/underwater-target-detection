@@ -1,25 +1,28 @@
 """视频检测 service。
 
-与图片 service 类似，这里负责视频接口背后的完整流程：
+这里负责视频接口背后的完整流程：
 1. 校验参数与文件类型；
 2. 保存上传视频；
-3. 生成 mock 视频基础信息；
-4. 生成 mock 视频分析结果；
-5. 复制出一份“结果视频”到输出目录；
-6. 写入 metadata JSON；
-7. 返回统一响应数据。
+3. 读取真实视频信息；
+4. 逐帧调用 YOLOv8 做推理并绘框；
+5. 写出检测结果视频；
+6. 基于逐帧结果计算真实统计信息；
+7. 写入 metadata JSON；
+8. 返回统一响应数据。
 """
 
+from time import perf_counter
 from pathlib import Path
 
+import cv2
 from fastapi import HTTPException, UploadFile, status
 
 from app.core.config import get_settings
+from app.models.detector import get_detector
 from app.schemas.video import VideoDetectionResponse, VideoInfo
-from app.services.analysis_service import generate_mock_video_analysis
+from app.services.analysis_service import FrameAnalysisInput, build_video_analysis
 from app.utils.file_manager import (
     build_public_url,
-    copy_file,
     generate_task_id,
     save_metadata,
     save_upload_file,
@@ -49,12 +52,31 @@ def _validate_extension(filename: str, allowed_extensions: set[str]) -> str:
     return suffix
 
 
+def _create_video_writer(result_path: Path, fps: float, width: int, height: int) -> cv2.VideoWriter:
+    """创建结果视频写入器，并在失败时明确报错。"""
+
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    writer = cv2.VideoWriter(
+        str(result_path),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        fps,
+        (width, height),
+    )
+    if not writer.isOpened():
+        writer.release()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="failed to initialize video writer",
+        )
+    return writer
+
+
 async def detect_video(
     upload_file: UploadFile,
     conf: float | None = None,
     iou: float | None = None,
 ) -> VideoDetectionResponse:
-    """执行视频 mock 检测流程。"""
+    """执行视频真实检测流程。"""
 
     settings = get_settings()
     settings.ensure_directories()
@@ -62,13 +84,15 @@ async def detect_video(
     # 先校验阈值参数。
     _validate_threshold(conf, "conf")
     _validate_threshold(iou, "iou")
+    resolved_conf = conf if conf is not None else settings.default_conf
+    resolved_iou = iou if iou is not None else settings.default_iou
 
     original_filename = upload_file.filename or "video.mp4"
-    suffix = _validate_extension(original_filename, ALLOWED_VIDEO_EXTENSIONS)
+    _validate_extension(original_filename, ALLOWED_VIDEO_EXTENSIONS)
     task_id = generate_task_id()
 
     # 保存原始上传视频。
-    upload_path = settings.upload_dir_abs / "videos" / f"{task_id}{suffix}"
+    upload_path = settings.upload_dir_abs / "videos" / f"{task_id}{Path(original_filename).suffix.lower()}"
     file_size = await save_upload_file(upload_file=upload_file, destination=upload_path)
     max_size_bytes = settings.max_video_size_mb * 1024 * 1024
     if file_size > max_size_bytes:
@@ -79,24 +103,91 @@ async def detect_video(
             detail=f"video exceeds {settings.max_video_size_mb}MB limit",
         )
 
-    # 当前 mock 版本没有真实逐帧处理，所以直接复制一份作为结果视频。
-    result_path = settings.output_dir_abs / "videos" / f"result_{task_id}{suffix}"
-    copy_file(source=upload_path, destination=result_path)
+    detector = get_detector()
+    result_path = settings.output_dir_abs / "videos" / f"result_{task_id}.mp4"
+    capture: cv2.VideoCapture | None = None
+    writer: cv2.VideoWriter | None = None
+    frame_results: list[FrameAnalysisInput] = []
+    processed_frame_count = 0
+    should_cleanup_result = False
+    start_time = perf_counter()
 
-    # 视频基础信息先写成固定 mock 值，后续可改为通过 OpenCV 读取真实信息。
+    try:
+        capture = cv2.VideoCapture(str(upload_path))
+        if not capture.isOpened():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="failed to open video file",
+            )
+
+        raw_fps = float(capture.get(cv2.CAP_PROP_FPS))
+        fps = raw_fps if raw_fps > 0 else 1.0
+        width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        declared_frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        if width <= 0 or height <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="failed to read video dimensions",
+            )
+
+        writer = _create_video_writer(
+            result_path=result_path,
+            fps=fps,
+            width=width,
+            height=height,
+        )
+
+        frame_index = 0
+        while True:
+            success, frame = capture.read()
+            if not success:
+                break
+
+            detection_output = detector.detect_frame(
+                frame=frame,
+                conf=resolved_conf,
+                iou=resolved_iou,
+            )
+            plotted_frame = detection_output.plotted_image if detection_output.plotted_image is not None else frame
+            writer.write(plotted_frame)
+            frame_results.append(
+                FrameAnalysisInput(
+                    frame_index=frame_index,
+                    detected_classes={item.class_name for item in detection_output.detections},
+                    detection_count=len(detection_output.detections),
+                )
+            )
+            frame_index += 1
+
+        processed_frame_count = frame_index
+        frame_count = declared_frame_count if declared_frame_count > 0 else processed_frame_count
+        process_time = round(perf_counter() - start_time, 4)
+    except Exception:
+        should_cleanup_result = True
+        raise
+    finally:
+        if capture is not None:
+            capture.release()
+        if writer is not None:
+            writer.release()
+        if should_cleanup_result:
+            result_path.unlink(missing_ok=True)
+
+    duration = round(processed_frame_count / fps, 4) if processed_frame_count > 0 else 0.0
     video_info = VideoInfo(
-        fps=25,
-        frame_count=900,
-        duration=36.0,
-        width=1280,
-        height=720,
+        fps=int(round(fps)),
+        frame_count=processed_frame_count if processed_frame_count > 0 else frame_count,
+        duration=duration,
+        width=width,
+        height=height,
     )
-    # 分析结果从专门的 analysis_service 生成，避免统计逻辑堆在这里。
-    analysis = generate_mock_video_analysis(
-        fps=video_info.fps,
-        duration_seconds=int(video_info.duration),
+    analysis = build_video_analysis(
+        frame_results=frame_results,
+        fps=fps,
+        frame_count=video_info.frame_count,
     )
-    process_time = 3.6
 
     response = VideoDetectionResponse(
         task_id=task_id,
@@ -113,8 +204,9 @@ async def detect_video(
             "task_type": "video",
             "task_id": task_id,
             "original_filename": original_filename,
-            "conf": conf if conf is not None else settings.default_conf,
-            "iou": iou if iou is not None else settings.default_iou,
+            "model_path": settings.model_path,
+            "conf": resolved_conf,
+            "iou": resolved_iou,
             "data": response.model_dump(mode="json"),
         },
     )
