@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+
+# Env
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Build
+dist/
+build/
+
+# Node
+node_modules/
+
+# Runtime files
+uploads/*
+!uploads/.gitkeep
+
+outputs/*
+!outputs/.gitkeep
+
+metadata/*
+!metadata/.gitkeep
+
+# Weights
+weights/*
+!weights/.gitkeep
+
+# Temporary
+tmp/
+temp/
