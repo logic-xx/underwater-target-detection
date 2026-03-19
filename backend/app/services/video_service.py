@@ -11,10 +11,12 @@
 8. 返回统一响应数据。
 """
 
+import subprocess
 from time import perf_counter
 from pathlib import Path
 
 import cv2
+from imageio_ffmpeg import get_ffmpeg_exe
 from fastapi import HTTPException, UploadFile, status
 
 from app.core.config import get_settings
@@ -52,12 +54,12 @@ def _validate_extension(filename: str, allowed_extensions: set[str]) -> str:
     return suffix
 
 
-def _create_video_writer(result_path: Path, fps: float, width: int, height: int) -> cv2.VideoWriter:
-    """创建结果视频写入器，并在失败时明确报错。"""
+def _create_video_writer(video_path: Path, fps: float, width: int, height: int) -> cv2.VideoWriter:
+    """创建中间结果视频写入器，并在失败时明确报错。"""
 
-    result_path.parent.mkdir(parents=True, exist_ok=True)
+    video_path.parent.mkdir(parents=True, exist_ok=True)
     writer = cv2.VideoWriter(
-        str(result_path),
+        str(video_path),
         cv2.VideoWriter_fourcc(*"mp4v"),
         fps,
         (width, height),
@@ -69,6 +71,37 @@ def _create_video_writer(result_path: Path, fps: float, width: int, height: int)
             detail="failed to initialize video writer",
         )
     return writer
+
+
+def _transcode_to_browser_mp4(source_path: Path, destination_path: Path) -> None:
+    """把 OpenCV 生成的中间视频转成浏览器兼容性更好的 H.264 MP4。"""
+
+    ffmpeg_executable = get_ffmpeg_exe()
+    command = [
+        ffmpeg_executable,
+        "-y",
+        "-i",
+        str(source_path),
+        "-an",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+        str(destination_path),
+    ]
+    completed = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0 or not destination_path.exists() or destination_path.stat().st_size == 0:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="failed to transcode browser-compatible mp4",
+        )
 
 
 async def detect_video(
@@ -104,6 +137,7 @@ async def detect_video(
         )
 
     detector = get_detector()
+    intermediate_result_path = settings.output_dir_abs / "videos" / f"result_{task_id}_raw.mp4"
     result_path = settings.output_dir_abs / "videos" / f"result_{task_id}.mp4"
     capture: cv2.VideoCapture | None = None
     writer: cv2.VideoWriter | None = None
@@ -133,7 +167,7 @@ async def detect_video(
             )
 
         writer = _create_video_writer(
-            result_path=result_path,
+            video_path=intermediate_result_path,
             fps=fps,
             width=width,
             height=height,
@@ -163,6 +197,11 @@ async def detect_video(
 
         processed_frame_count = frame_index
         frame_count = declared_frame_count if declared_frame_count > 0 else processed_frame_count
+        if processed_frame_count == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="video contains no readable frames",
+            )
         process_time = round(perf_counter() - start_time, 4)
     except Exception:
         should_cleanup_result = True
@@ -173,7 +212,20 @@ async def detect_video(
         if writer is not None:
             writer.release()
         if should_cleanup_result:
+            intermediate_result_path.unlink(missing_ok=True)
             result_path.unlink(missing_ok=True)
+
+    try:
+        _transcode_to_browser_mp4(
+            source_path=intermediate_result_path,
+            destination_path=result_path,
+        )
+    except Exception:
+        intermediate_result_path.unlink(missing_ok=True)
+        result_path.unlink(missing_ok=True)
+        raise
+    finally:
+        intermediate_result_path.unlink(missing_ok=True)
 
     duration = round(processed_frame_count / fps, 4) if processed_frame_count > 0 else 0.0
     video_info = VideoInfo(
