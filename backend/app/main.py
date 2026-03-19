@@ -8,7 +8,7 @@
 真正的业务逻辑不应该写在这里，而应该继续下沉到 `api/`、`services/`
 和 `utils/` 中，这样后续接入真实模型时更容易维护。
 """
-
+from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
@@ -47,6 +47,16 @@ def create_app() -> FastAPI:
         title="Underwater Target Detection System",
         version="0.1.0",
         lifespan=lifespan,
+    )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+        ],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 
     # 注册总路由。后续新增业务路由时，只需要在 `api/router.py` 中聚合即可。
